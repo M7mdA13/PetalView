@@ -74,9 +74,3 @@ Special thanks to Route team for providing the learning opportunity.
 
 ---
 
-## 📬 Contact
-
-**Fager Hussein Ahmed**  
-📧 fagerhu03@gmail.com  
-🔗 [LinkedIn](https://www.linkedin.com/in/fagerhu/)  
-💻 [GitHub](https://github.com/fagerhu03)
