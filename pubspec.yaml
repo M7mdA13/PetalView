@@ -35,7 +35,7 @@ dependencies:
   google_fonts: ^6.3.2
   cached_network_image: ^3.3.1
   shared_preferences: ^2.2.3
-  image_picker: ^1.1.2   # pick image from camera/gallery
+  image_picker: ^1.2.0   # pick image from camera/gallery
   share_plus: ^10.0.2    # share posts
   flutter_map: ^6.1.0
   latlong2: ^0.9.0
@@ -46,6 +46,9 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  firebase_auth: ^6.1.2
+  cloud_firestore: ^6.1.0
+  firebase_storage: ^13.0.4
 
 dev_dependencies:
   flutter_test:

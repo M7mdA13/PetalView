@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:petalview/auth/login.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class Signup extends StatefulWidget {
   static const routeName = 'SignUp';
@@ -15,16 +17,16 @@ class _SignupState extends State<Signup> {
 
   // Controllers
   final _firstName = TextEditingController();
-  final _lastName  = TextEditingController();
-  final _email     = TextEditingController();
-  final _password  = TextEditingController();
-  final _confirm   = TextEditingController();
+  final _lastName = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  final _confirm = TextEditingController();
 
   bool _obscurePass = true;
   bool _obscureConfirm = true;
-
+  bool _isLoading = false;
   // ألوان ثابتة
-  static const mint  = Color(0xFFE6F3EA);
+  static const mint = Color(0xFFE6F3EA);
   static const green = Color(0xFF23C16B);
   static const borderLight = Color(0xFFDAEFDE);
 
@@ -76,7 +78,7 @@ class _SignupState extends State<Signup> {
     if (v == null || v.isEmpty) return 'Password is required';
     if (v.length < 8) return 'Minimum 8 characters';
     final hasLetter = RegExp(r'[A-Za-z]').hasMatch(v);
-    final hasDigit  = RegExp(r'\d').hasMatch(v);
+    final hasDigit = RegExp(r'\d').hasMatch(v);
     if (!hasLetter || !hasDigit) return 'Use letters and numbers';
     return null;
   }
@@ -87,13 +89,61 @@ class _SignupState extends State<Signup> {
     return null;
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     final valid = _formKey.currentState?.validate() ?? false;
-    if (!valid) return;
+    if (!valid || _isLoading) return;
 
-    // TODO: call your sign-up API / Firebase here.
-    // لو التسجيل نجح:
-    Navigator.of(context).pushReplacementNamed('home');
+    setState(() => _isLoading = true);
+
+    try {
+      // 1. Store the result of creating the user in a new variable
+      final UserCredential userCredential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(
+            email: _email.text.trim(),
+            password: _password.text.trim(),
+          );
+
+      // 2. NOW you can create the 'uid' variable from that result
+      final String uid = userCredential.user!.uid;
+
+      // 3. This line will now work perfectly
+      await FirebaseFirestore.instance.collection('users').doc(uid).set({
+        'firstName': _firstName.text.trim(),
+        'lastName': _lastName.text.trim(),
+        'email': _email.text.trim(),
+        'createdAt': Timestamp.now(),
+      });
+
+      if (mounted) {
+        Navigator.of(context).pushReplacementNamed('home');
+      }
+    } on FirebaseAuthException catch (e) {
+      String message = 'An error occurred. Please try again.';
+      if (e.code == 'weak-password') {
+        message = 'The password provided is too weak.';
+      } else if (e.code == 'email-already-in-use') {
+        message = 'An account already exists for that email.';
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message), backgroundColor: Colors.red),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('An unexpected error occurred: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
   }
 
   @override
@@ -172,10 +222,13 @@ class _SignupState extends State<Signup> {
                             decoration: _dec(
                               "Password",
                               suffix: IconButton(
-                                onPressed: () =>
-                                    setState(() => _obscurePass = !_obscurePass),
+                                onPressed: () => setState(
+                                  () => _obscurePass = !_obscurePass,
+                                ),
                                 icon: Icon(
-                                  _obscurePass ? Icons.visibility_off : Icons.visibility,
+                                  _obscurePass
+                                      ? Icons.visibility_off
+                                      : Icons.visibility,
                                   color: Colors.grey[600],
                                 ),
                               ),
@@ -192,9 +245,12 @@ class _SignupState extends State<Signup> {
                               "Confirm Password",
                               suffix: IconButton(
                                 onPressed: () => setState(
-                                        () => _obscureConfirm = !_obscureConfirm),
+                                  () => _obscureConfirm = !_obscureConfirm,
+                                ),
                                 icon: Icon(
-                                  _obscureConfirm ? Icons.visibility_off : Icons.visibility,
+                                  _obscureConfirm
+                                      ? Icons.visibility_off
+                                      : Icons.visibility,
                                   color: Colors.grey[600],
                                 ),
                               ),
@@ -210,20 +266,32 @@ class _SignupState extends State<Signup> {
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: green,
                                 foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 14,
+                                ),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(28),
                                 ),
                                 elevation: 0,
                               ),
                               onPressed: _submit,
-                              child: Text(
-                                "Sign Up",
-                                style: GoogleFonts.merriweather(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
+                              child:
+                                  _isLoading // <-- CHECK THE FLAG HERE
+                                  ? const SizedBox(
+                                      width: 24,
+                                      height: 24,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 3,
+                                      ),
+                                    )
+                                  : Text(
+                                      "Sign Up",
+                                      style: GoogleFonts.merriweather(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
                             ),
                           ),
                           const SizedBox(height: 20),
@@ -259,15 +327,22 @@ class _SignupState extends State<Signup> {
                             width: double.infinity,
                             child: OutlinedButton(
                               style: OutlinedButton.styleFrom(
-                                side: const BorderSide(color: green, width: 1.5),
-                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                side: const BorderSide(
+                                  color: green,
+                                  width: 1.5,
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 14,
+                                ),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(28),
                                 ),
                               ),
                               onPressed: () {
                                 // ضيف/Guest → خش على الهوم
-                                Navigator.of(context).pushReplacementNamed('home');
+                                Navigator.of(
+                                  context,
+                                ).pushReplacementNamed('home');
                               },
                               child: Text(
                                 "Continue as a guest",

@@ -1,5 +1,8 @@
 plugins {
     id("com.android.application")
+    // START: FlutterFire Configuration
+    id("com.google.gms.google-services")
+    // END: FlutterFire Configuration
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
@@ -7,11 +10,11 @@ plugins {
 
 android {
     namespace = "com.example.petalview"
-    compileSdk = 35
+    compileSdk = 36
     ndkVersion = "29.0.13599897"
 
 defaultConfig {
-        minSdk = 23
+        minSdk = flutter.minSdkVersion
         targetSdk = 34
     }
     compileOptions {
