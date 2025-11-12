@@ -43,3 +43,14 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# google-services.json file
+/android/app/google-services.json
+# GoogleService-Info.plist file
+/ios/Runner/GoogleService-Info.plist
+# Generated plugin registrant
+/ios/Runner/GeneratedPluginRegistrant.*swift
+/ios/Runner/GeneratedPluginRegistrant.h
+/ios/Runner/GeneratedPluginRegistrant.m
+/ios/Runner/GeneratedPluginRegistrant.mm
+/ios/Runner/GeneratedPluginRegistrant.swift
