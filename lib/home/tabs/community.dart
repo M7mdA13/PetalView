@@ -5,6 +5,52 @@ import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
+// <-- NEW: Import all the Firebase packages
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+
+// <-- NEW: A proper Post model that matches our Firestore data
+class Post {
+  final String id; // Document ID
+  final String authorId;
+  final String authorName;
+  final String? authorProfilePicUrl;
+  final String text;
+  final String? imageUrl;
+  final String tag;
+  final Timestamp createdAt;
+  final List<String> likes; // A list of UIDs who liked the post
+
+  Post({
+    required this.id,
+    required this.authorId,
+    required this.authorName,
+    this.authorProfilePicUrl,
+    required this.text,
+    this.imageUrl,
+    required this.tag,
+    required this.createdAt,
+    required this.likes,
+  });
+
+  // Factory constructor to create a Post from a Firestore document
+  factory Post.fromFirestore(DocumentSnapshot doc) {
+    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+    return Post(
+      id: doc.id,
+      authorId: data['authorId'] ?? '',
+      authorName: data['authorName'] ?? 'User',
+      authorProfilePicUrl: data['authorProfilePicUrl'],
+      text: data['text'] ?? '',
+      imageUrl: data['imageUrl'],
+      tag: data['tag'] ?? 'General',
+      createdAt: data['createdAt'] ?? Timestamp.now(),
+      likes: List<String>.from(data['likes'] ?? []),
+    );
+  }
+}
+
 class CommunityScreen extends StatefulWidget {
   const CommunityScreen({super.key});
   static const routeName = 'Community';
@@ -15,32 +61,64 @@ class CommunityScreen extends StatefulWidget {
 
 class _CommunityScreenState extends State<CommunityScreen> {
   // THEME
-  static const mint   = Color(0xFFE6F3EA);
-  static const green  = Color(0xFF2E7D32);
+  static const mint = Color(0xFFE6F3EA);
+  static const green = Color(0xFF2E7D32);
   static const mintCard = Color(0xFFDFF0E3);
   static const mintBorder = Color(0xFFB7E0C2);
-  static const cardShadow = BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0,6));
+  static const cardShadow =
+      BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 6));
 
   // STATE
   final TextEditingController _composerCtrl = TextEditingController();
-  final List<_Post> _posts = [];
   String _search = '';
   File? _composerImage;
+
+  // <-- NEW: State variables for loading and current user info
+  bool _isLoadingPost = false;
+  String? _currentUserFirstName;
+  String? _currentUserProfilePicUrl;
+
+  // <-- NEW: Get the current user's UID
+  final String _currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
 
   @override
   void initState() {
     super.initState();
-    _seedDemoPosts(); // 10 بوست بصور أونلاين ثابتة
+    // <-- NEW: Load user data for posting, remove _seedDemoPosts()
+    _loadCurrentUserData();
+  }
+
+  // <-- NEW: Fetch the logged-in user's name and pic for new posts
+  Future<void> _loadCurrentUserData() async {
+    if (_currentUserId.isEmpty) return;
+
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(_currentUserId)
+          .get();
+      if (doc.exists) {
+        final data = doc.data() as Map<String, dynamic>;
+        setState(() {
+          _currentUserFirstName = data['firstName'];
+          _currentUserProfilePicUrl = data['profilePicUrl'];
+        });
+      }
+    } catch (e) {
+      print("Error loading user data for community: $e");
+    }
   }
 
   // ACTIONS
   Future<void> _pickComposerImage() async {
     final picker = ImagePicker();
-    final XFile? img = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+    final XFile? img =
+        await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
     if (img != null) setState(() => _composerImage = File(img.path));
   }
 
-  void _submitPost() {
+  // <-- CHANGED: This is now async and saves to Firebase
+  Future<void> _submitPost() async {
     final text = _composerCtrl.text.trim();
     if (text.isEmpty && _composerImage == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -48,28 +126,80 @@ class _CommunityScreenState extends State<CommunityScreen> {
       );
       return;
     }
-    setState(() {
-      _posts.insert(
-        0,
-        _Post(
-          name: 'You',
-          tag: 'General',
-          timeAgo: 'now',
-          text: text,
-          fileImage: _composerImage,
-          likes: 0,
-          comments: [],
-        ),
+    if (_isLoadingPost) return;
+
+    setState(() => _isLoadingPost = true);
+
+    try {
+      String? imageUrl;
+
+      // 1. Upload image to Firebase Storage (if one exists)
+      if (_composerImage != null) {
+        // Create a unique file name
+        final imageId = DateTime.now().millisecondsSinceEpoch.toString();
+        final ref = FirebaseStorage.instance
+            .ref()
+            .child('post_images')
+            .child('$imageId.jpg');
+
+        await ref.putFile(_composerImage!);
+        imageUrl = await ref.getDownloadURL();
+      }
+
+      // 2. Create the post document in Firestore
+      await FirebaseFirestore.instance.collection('posts').add({
+        'authorId': _currentUserId,
+        'authorName': _currentUserFirstName ?? 'A User',
+        'authorProfilePicUrl': _currentUserProfilePicUrl,
+        'text': text,
+        'imageUrl': imageUrl,
+        'tag': 'General', // TODO: You can add a tag selector later
+        'createdAt': Timestamp.now(),
+        'likes': [], // Starts with no likes
+      });
+
+      // 3. Clear the composer
+      setState(() {
+        _composerCtrl.clear();
+        _composerImage = null;
+        _isLoadingPost = false;
+      });
+    } catch (e) {
+      print("Error posting: $e");
+      setState(() => _isLoadingPost = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Error posting: $e'), backgroundColor: Colors.red),
       );
-      _composerCtrl.clear();
-      _composerImage = null;
-    });
+    }
   }
 
-  Future<void> _refresh() async {
-    await Future.delayed(const Duration(milliseconds: 800));
-    if (mounted) setState(() {});
+  // <-- NEW: Handles liking a post in Firestore
+  Future<void> _toggleLike(Post post) async {
+    if (_currentUserId.isEmpty) return;
+
+    final postRef =
+        FirebaseFirestore.instance.collection('posts').doc(post.id);
+
+    try {
+      if (post.likes.contains(_currentUserId)) {
+        // User already liked it, so "unlike" it
+        await postRef.update({
+          'likes': FieldValue.arrayRemove([_currentUserId])
+        });
+      } else {
+        // User hasn't liked it, so "like" it
+        await postRef.update({
+          'likes': FieldValue.arrayUnion([_currentUserId])
+        });
+      }
+    } catch (e) {
+      print("Error toggling like: $e");
+    }
   }
+
+  // <-- REFRESH is no longer needed, StreamBuilder handles updates
+  // Future<void> _refresh() async { ... }
 
   void _openFiltersSheet() {
     showModalBottomSheet(
@@ -88,11 +218,7 @@ class _CommunityScreenState extends State<CommunityScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final filteredPosts = _posts.where((p) {
-      if (_search.isEmpty) return true;
-      return p.tag.toLowerCase().contains(_search.toLowerCase()) ||
-          p.text.toLowerCase().contains(_search.toLowerCase());
-    }).toList();
+    // <-- REMOVED: final filteredPosts = ... (this logic moves inside the StreamBuilder)
 
     return Scaffold(
       body: Stack(
@@ -100,48 +226,97 @@ class _CommunityScreenState extends State<CommunityScreen> {
         children: [
           Image.asset('assets/bg_welcome.png', fit: BoxFit.cover),
           Container(color: mint.withOpacity(0.15)),
-
           SafeArea(
-            child: RefreshIndicator(
-              onRefresh: _refresh,
-              child: ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                children: [
-                  Align(
-                    alignment: Alignment.center,
-                    child: Image.asset('assets/onboarding/logo.png', height: 48),
-                  ),
-                  const SizedBox(height: 10),
+            // <-- CHANGED: RefreshIndicator is removed, not needed with a Stream
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              children: [
+                Align(
+                  alignment: Alignment.center,
+                  child: Image.asset('assets/onboarding/logo.png', height: 48),
+                ),
+                const SizedBox(height: 10),
+                _SearchBar(
+                  onChanged: (v) => setState(() => _search = v),
+                  onOpenFilters: _openFiltersSheet,
+                ),
+                const SizedBox(height: 14),
 
-                  // SEARCH
-                  _SearchBar(
-                    onChanged: (v) => setState(() => _search = v),
-                    onOpenFilters: _openFiltersSheet,
-                  ),
+                // <-- CHANGED: Composer now shows user's profile pic and loading
+                _Composer(
+                  controller: _composerCtrl,
+                  onPickImage: _pickComposerImage,
+                  onPost: _submitPost,
+                  attachedImage: _composerImage,
+                  isPosting: _isLoadingPost, // <-- NEW
+                  userProfilePicUrl: _currentUserProfilePicUrl, // <-- NEW
+                ),
+                const SizedBox(height: 12),
 
-                  const SizedBox(height: 14),
+                // <-- CHANGED: This is now a StreamBuilder to show the live feed
+                StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('posts')
+                      .orderBy('createdAt', descending: true)
+                      .snapshots(),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(32.0),
+                          child: CircularProgressIndicator(color: green),
+                        ),
+                      );
+                    }
 
-                  // COMPOSER
-                  _Composer(
-                    controller: _composerCtrl,
-                    onPickImage: _pickComposerImage,
-                    onPost: _submitPost,
-                    attachedImage: _composerImage,
-                  ),
-                  const SizedBox(height: 12),
+                    if (snapshot.hasError) {
+                      return Center(child: Text('Error: ${snapshot.error}'));
+                    }
 
-                  // FEED
-                  for (final post in filteredPosts)
-                    _PostCard(
-                      post: post,
-                      onToggleLike: () => setState(() => post.toggleLike()),
-                      onComment: () => _openComments(post),
-                      onShare: () => Share.share(post.text),
-                    ),
-                  const SizedBox(height: 20),
-                ],
-              ),
+                    if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                      return const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(32.0),
+                          child: Text('No posts yet. Be the first!'),
+                        ),
+                      );
+                    }
+
+                    // Map Firestore docs to Post objects
+                    final posts = snapshot.data!.docs
+                        .map((doc) => Post.fromFirestore(doc))
+                        .toList();
+
+                    // Apply local search filter to the live data
+                    final filteredPosts = posts.where((p) {
+                      if (_search.isEmpty) return true;
+                      return p.tag
+                              .toLowerCase()
+                              .contains(_search.toLowerCase()) ||
+                          p.text.toLowerCase().contains(_search.toLowerCase());
+                    }).toList();
+
+                    // Use Column instead of ListView.builder since we are
+                    // already inside a ListView
+                    return Column(
+                      children: filteredPosts
+                          .map((post) => _PostCard(
+                                post: post,
+                                // <-- Pass the real user ID
+                                currentUserId: _currentUserId,
+                                // <-- Pass the new Firestore function
+                                onToggleLike: () => _toggleLike(post),
+                                // <-- Stubbed out for now
+                                onComment: () => _openComments(post),
+                                onShare: () => Share.share(post.text),
+                              ))
+                          .toList(),
+                    );
+                  },
+                ),
+                const SizedBox(height: 20),
+              ],
             ),
           ),
         ],
@@ -149,212 +324,29 @@ class _CommunityScreenState extends State<CommunityScreen> {
     );
   }
 
-  void _openComments(_Post post) {
-    final controller = TextEditingController();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) {
-        return Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(ctx).viewInsets.bottom,
-            left: 16, right: 16, top: 12,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                height: 4, width: 36, margin: const EdgeInsets.only(bottom: 8),
-                decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(2)),
-              ),
-              Text('Comments', style: GoogleFonts.poppins(fontWeight: FontWeight.w700, fontSize: 16)),
-              const SizedBox(height: 8),
-              Flexible(
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: post.comments.length,
-                  separatorBuilder: (_, __) => const Divider(height: 16),
-                  itemBuilder: (_, i) => Text('• ${post.comments[i]}', style: GoogleFonts.poppins()),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: controller,
-                      decoration: const InputDecoration(
-                        hintText: 'Write a comment…',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: () {
-                      final txt = controller.text.trim();
-                      if (txt.isNotEmpty) {
-                        setState(() => post.comments.add(txt));
-                        controller.clear();
-                      }
-                    },
-                    child: const Text('Send'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-            ],
-          ),
-        );
-      },
+  // <-- CHANGED: Stubbed out for simplicity.
+  // Real comments should be a subcollection in Firestore.
+  void _openComments(Post post) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+          content: Text('Comments are the next step! (Requires subcollection)')),
     );
-  }
-
-  // ---------- Seed 10 posts (network images via Picsum) ----------
-  void _seedDemoPosts() {
-    _posts
-      ..clear()
-      ..addAll([
-        _Post(
-          name: 'Ahmed Khaled',
-          tag: 'General',
-          timeAgo: '1d',
-          text: "Guys look what I found today!!",
-          networkImageUrl: 'https://picsum.photos/seed/flower1/800/600',
-          likes: 12,
-          comments: ['Wow!', 'Where is this?'],
-        ),
-        _Post(
-          name: 'Sofia N.',
-          tag: 'Photos',
-          timeAgo: '5h',
-          text: "Jacaranda in full bloom 💜",
-          networkImageUrl: 'https://picsum.photos/seed/flower2/800/600',
-          likes: 31,
-          comments: ['So pretty!', 'My favorite tree.'],
-        ),
-        _Post(
-          name: 'Mahmoud A.',
-          tag: 'Phenology',
-          timeAgo: '2d',
-          text: "First buds on the almond trees this season.",
-          networkImageUrl: 'https://picsum.photos/seed/flower3/800/600',
-          likes: 21,
-          comments: ['Early this year!', 'Nice capture.'],
-        ),
-        _Post(
-          name: 'Nora H.',
-          tag: 'General',
-          timeAgo: '3h',
-          text: "Wild poppies by the roadside 🌺",
-          networkImageUrl: 'https://picsum.photos/seed/flower4/800/600',
-          likes: 18,
-          comments: ['Love these!', 'Where was this?'],
-        ),
-        _Post(
-          name: 'Omar E.',
-          tag: 'Photos',
-          timeAgo: '8h',
-          text: "Morning dew on rose petals.",
-          networkImageUrl: 'https://picsum.photos/seed/flower5/800/600',
-          likes: 44,
-          comments: ['Crisp shot!', 'Amazing details.'],
-        ),
-        _Post(
-          name: 'Lina M.',
-          tag: 'Help',
-          timeAgo: '12h',
-          text: "Can someone ID this purple shrub?",
-          networkImageUrl: 'https://picsum.photos/seed/flower6/800/600',
-          likes: 7,
-          comments: ['Looks like lilac?', 'Maybe buddleia.'],
-        ),
-        _Post(
-          name: 'Hassan R.',
-          tag: 'General',
-          timeAgo: '4d',
-          text: "Sunflowers tracking the sun ☀️🌻",
-          networkImageUrl: 'https://picsum.photos/seed/flower7/800/600',
-          likes: 52,
-          comments: ['Iconic!', 'So bright!'],
-        ),
-        _Post(
-          name: 'Farah T.',
-          tag: 'Photos',
-          timeAgo: '1d',
-          text: "Bougainvillea on an old wall.",
-          networkImageUrl: 'https://picsum.photos/seed/flower8/800/600',
-          likes: 23,
-          comments: ['Mediterranean vibes!', 'Lovely color.'],
-        ),
-        _Post(
-          name: 'Youssef K.',
-          tag: 'Phenology',
-          timeAgo: '2h',
-          text: "Acacia starting to bloom—earlier than last year.",
-          networkImageUrl: 'https://picsum.photos/seed/flower9/800/600',
-          likes: 14,
-          comments: ['Interesting shift.', 'Logging this!'],
-        ),
-        _Post(
-          name: 'Maya S.',
-          tag: 'Photos',
-          timeAgo: '6h',
-          text: "Cherry blossoms downtown 🌸",
-          networkImageUrl: 'https://picsum.photos/seed/flower10/800/600',
-          likes: 36,
-          comments: ['Sakura season!', 'So soft.'],
-        ),
-      ]);
+    // The old logic (showModalBottomSheet) won't work as it only
+    // updated a local list.
   }
 }
 
 /* ---------- MODELS ---------- */
 
-class _Post {
-  _Post({
-    required this.name,
-    required this.tag,
-    required this.timeAgo,
-    required this.text,
-    this.assetImage,
-    this.fileImage,
-    this.networkImageUrl,
-    this.likes = 0,
-    this.comments = const [],
-  });
-
-  String name;
-  String tag;
-  String timeAgo;
-  String text;
-
-  // image sources
-  String? assetImage;       // bundled demo images
-  File? fileImage;          // composed images
-  String? networkImageUrl;  // online images
-
-  int likes;
-  bool liked = false;
-  List<String> comments;
-
-  void toggleLike() {
-    liked = !liked;
-    likes += liked ? 1 : -1;
-  }
-}
+// <-- REMOVED: The old _Post class is replaced by the new public Post class
 
 /* ---------- WIDGETS (look & feel) ---------- */
 
+// <-- No changes to _SearchBar, _ReelCardAdd, _ReelCardEmpty -->
 class _SearchBar extends StatelessWidget {
   const _SearchBar({this.onChanged, this.onOpenFilters});
   final ValueChanged<String>? onChanged;
   final VoidCallback? onOpenFilters;
-
   static const green = Color(0xFF2E7D32);
 
   @override
@@ -395,75 +387,82 @@ class _SearchBar extends StatelessWidget {
   }
 }
 
+// ... (Keep _ReelCardAdd and _ReelCardEmpty exactly as they were) ...
 class _ReelCardAdd extends StatelessWidget {
-  const _ReelCardAdd();
+ const _ReelCardAdd();
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 110,
-      decoration: BoxDecoration(
-        color: _CommunityStyle.mintCard,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: const [_CommunityStyle.cardShadow],
-        border: Border.all(color: _CommunityStyle.mintBorder),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Reels coming soon ✨')),
-          );
-        },
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const CircleAvatar(backgroundColor: Colors.white, radius: 20, child: Icon(Icons.add, color: Color(0xFF2E7D32))),
-            const SizedBox(height: 8),
-            Text('Add Reel', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, color: const Color(0xFF2E7D32))),
-          ],
-        ),
-      ),
-    );
-  }
+ @override
+ Widget build(BuildContext context) {
+  return Container(
+   height: 110,
+   decoration: BoxDecoration(
+    color: _CommunityStyle.mintCard,
+    borderRadius: BorderRadius.circular(18),
+    boxShadow: const [_CommunityStyle.cardShadow],
+   border: Border.all(color: _CommunityStyle.mintBorder),
+   ),
+   child: InkWell(
+    borderRadius: BorderRadius.circular(18),
+    onTap: () {
+     ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Reels coming soon ✨')),
+     );
+    },
+    child: Column(
+     mainAxisAlignment: MainAxisAlignment.center,
+     children: [
+      const CircleAvatar(backgroundColor: Colors.white, radius: 20, child: Icon(Icons.add, color: Color(0xFF2E7D32))),
+      const SizedBox(height: 8),
+      Text('Add Reel', style: GoogleFonts.poppins(fontWeight: FontWeight.w600, color: const Color(0xFF2E7D32))),
+     ],
+    ),
+   ),
+  );
+ }
 }
 
 class _ReelCardEmpty extends StatelessWidget {
-  const _ReelCardEmpty();
+ const _ReelCardEmpty();
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 110,
+ @override
+ Widget build(BuildContext context) {
+  return Container(
+   height: 110,
       decoration: BoxDecoration(
-        color: _CommunityStyle.mintCard,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: const [_CommunityStyle.cardShadow],
-        border: Border.all(color: _CommunityStyle.mintBorder),
-      ),
-      child: Center(
-        child: Text(
-          'No reels yet.\nBe the first to share!',
-          textAlign: TextAlign.center,
-          style: GoogleFonts.poppins(color: const Color(0xFF2E7D32), fontWeight: FontWeight.w600),
-        ),
-      ),
-    );
-  }
+    color: _CommunityStyle.mintCard,
+    borderRadius: BorderRadius.circular(18),
+    boxShadow: const [_CommunityStyle.cardShadow],
+    border: Border.all(color: _CommunityStyle.mintBorder),
+   ),
+   child: Center(
+    child: Text(
+     'No reels yet.\nBe the first to share!',
+      textAlign: TextAlign.center,
+     style: GoogleFonts.poppins(color: const Color(0xFF2E7D32), fontWeight: FontWeight.w600),
+    ),
+   ),
+  );
+ }
 }
 
+
+// <-- CHANGED: _Composer now shows user's pic and loading state
 class _Composer extends StatelessWidget {
   const _Composer({
     required this.controller,
     required this.onPickImage,
     required this.onPost,
     this.attachedImage,
+    this.userProfilePicUrl,
+    this.isPosting = false,
   });
 
   final TextEditingController controller;
   final VoidCallback onPickImage;
   final VoidCallback onPost;
   final File? attachedImage;
+  final String? userProfilePicUrl; // <-- NEW
+  final bool isPosting; // <-- NEW
 
   @override
   Widget build(BuildContext context) {
@@ -478,7 +477,17 @@ class _Composer extends StatelessWidget {
         children: [
           Row(
             children: [
-              const CircleAvatar(backgroundColor: Colors.white, radius: 18, child: Icon(Icons.person, color: Color(0xFF2E7D32))),
+              // <-- NEW: Show user's profile pic
+              CircleAvatar(
+                radius: 18,
+                backgroundColor: Colors.white,
+                backgroundImage: userProfilePicUrl != null
+                    ? CachedNetworkImageProvider(userProfilePicUrl!)
+                    : null,
+                child: userProfilePicUrl == null
+                    ? const Icon(Icons.person, color: Color(0xFF2E7D32))
+                    : null,
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: TextField(
@@ -493,23 +502,37 @@ class _Composer extends StatelessWidget {
                   maxLines: 3,
                 ),
               ),
-              IconButton(onPressed: onPickImage, icon: const Icon(Icons.image_rounded, color: Color(0xFF2E7D32))),
+              IconButton(
+                  onPressed: onPickImage,
+                  icon:
+                      const Icon(Icons.image_rounded, color: Color(0xFF2E7D32))),
             ],
           ),
           if (attachedImage != null) ...[
             const SizedBox(height: 8),
             ClipRRect(
               borderRadius: BorderRadius.circular(10),
-              child: Image.file(attachedImage!, height: 160, width: double.infinity, fit: BoxFit.cover),
+              child: Image.file(attachedImage!,
+                  height: 160, width: double.infinity, fit: BoxFit.cover),
             ),
           ],
           const SizedBox(height: 8),
           Align(
             alignment: Alignment.centerRight,
+            // <-- NEW: Show loading indicator on button
             child: FilledButton(
-              onPressed: onPost,
-              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32), foregroundColor: Colors.white),
-              child: const Text('Post'),
+              onPressed: isPosting ? null : onPost,
+              style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF2E7D32),
+                  foregroundColor: Colors.white),
+              child: isPosting
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('Post'),
             ),
           ),
         ],
@@ -518,15 +541,18 @@ class _Composer extends StatelessWidget {
   }
 }
 
+// <-- CHANGED: _PostCard now takes the new Post model
 class _PostCard extends StatelessWidget {
   const _PostCard({
     required this.post,
+    required this.currentUserId,
     required this.onToggleLike,
     required this.onComment,
     required this.onShare,
   });
 
-  final _Post post;
+  final Post post; // <-- CHANGED
+  final String currentUserId; // <-- NEW
   final VoidCallback onToggleLike;
   final VoidCallback onComment;
   final VoidCallback onShare;
@@ -535,68 +561,114 @@ class _PostCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // اختيار مصدر الصورة حسب الأولوية (file -> network -> asset)
+    // <-- NEW: Check if the current user liked this post
+    final bool isLiked = post.likes.contains(currentUserId);
+
     Widget? img;
-    if (post.fileImage != null) {
-      img = Image.file(post.fileImage!, fit: BoxFit.cover);
-    } else if (post.networkImageUrl != null) {
+    // <-- CHANGED: Simplified image logic
+    if (post.imageUrl != null) {
       img = CachedNetworkImage(
-        imageUrl: post.networkImageUrl!,
+        imageUrl: post.imageUrl!,
         fit: BoxFit.cover,
         placeholder: (ctx, url) => const _ImageSkeleton(),
         errorWidget: (ctx, url, err) => const _ImageError(),
       );
-    } else if (post.assetImage != null) {
-      img = Image.asset(post.assetImage!, fit: BoxFit.cover);
     } else {
       img = null;
+    }
+
+    // <-- NEW: Logic to format the timestamp
+    String timeAgo = 'Just now';
+    final duration = DateTime.now().difference(post.createdAt.toDate());
+    if (duration.inDays > 0) {
+      timeAgo = '${duration.inDays}d ago';
+    } else if (duration.inHours > 0) {
+      timeAgo = '${duration.inHours}h ago';
+    } else if (duration.inMinutes > 0) {
+      timeAgo = '${duration.inMinutes}m ago';
     }
 
     return Container(
       margin: const EdgeInsets.only(top: 8),
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), boxShadow: const [_CommunityStyle.cardShadow]),
+      decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: const [_CommunityStyle.cardShadow]),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const CircleAvatar(backgroundColor: Color(0xFFEFF6F1), child: Icon(Icons.person, color: green)),
+              // <-- CHANGED: Show author's profile pic
+              CircleAvatar(
+                backgroundColor: const Color(0xFFEFF6F1),
+                backgroundImage: post.authorProfilePicUrl != null
+                    ? CachedNetworkImageProvider(post.authorProfilePicUrl!)
+                    : null,
+                child: post.authorProfilePicUrl == null
+                    ? const Icon(Icons.person, color: green)
+                    : null,
+              ),
               const SizedBox(width: 10),
               Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(post.name, style: GoogleFonts.poppins(fontWeight: FontWeight.w700, color: Colors.black87)),
-                  Text('${post.tag} · ${post.timeAgo}', style: GoogleFonts.poppins(fontSize: 12, color: Colors.black54)),
-                ]),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // <-- CHANGED: Use data from Post model
+                    Text(post.authorName,
+                        style: GoogleFonts.poppins(
+                            fontWeight: FontWeight.w700,
+                            color: Colors.black87)),
+                    Text('$timeAgo · ${post.tag}', // <-- Use new timeAgo
+                        style: GoogleFonts.poppins(
+                            fontSize: 12, color: Colors.black54)),
+                  ],
+                ),
               ),
-              IconButton(onPressed: () {}, icon: const Icon(Icons.more_horiz, color: Colors.black54)),
+              IconButton(
+                  onPressed: () {
+                    // TODO: Add delete/report logic
+                  },
+                  icon: const Icon(Icons.more_horiz, color: Colors.black54)),
             ],
           ),
           const SizedBox(height: 6),
-          Text(post.text, style: GoogleFonts.poppins(fontSize: 14, color: Colors.black87)),
+          // <-- CHANGED: Use data from Post model
+          Text(post.text,
+              style: GoogleFonts.poppins(fontSize: 14, color: Colors.black87)),
           const SizedBox(height: 10),
-
           if (img != null)
-            ClipRRect(borderRadius: BorderRadius.circular(12), child: SizedBox(width: double.infinity, height: 220, child: img)),
-
+            ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: SizedBox(width: double.infinity, height: 220, child: img)),
           const SizedBox(height: 10),
           Row(
             children: [
               InkWell(
                 onTap: onToggleLike,
                 child: Row(children: [
-                  Icon(post.liked ? Icons.favorite : Icons.favorite_border, size: 20, color: green),
+                  // <-- CHANGED: Use new isLiked bool
+                  Icon(isLiked ? Icons.favorite : Icons.favorite_border,
+                      size: 20, color: isLiked ? Colors.red : green),
                   const SizedBox(width: 6),
-                  Text('${post.likes}', style: GoogleFonts.poppins(fontSize: 12, color: Colors.black54)),
+                  // <-- CHANGED: Use likes list length
+                  Text('${post.likes.length}',
+                      style:
+                          GoogleFonts.poppins(fontSize: 12, color: Colors.black54)),
                 ]),
               ),
               const SizedBox(width: 18),
               InkWell(
                 onTap: onComment,
                 child: Row(children: [
-                  const Icon(Icons.mode_comment_outlined, size: 20, color: Colors.black54),
+                  const Icon(Icons.mode_comment_outlined,
+                      size: 20, color: Colors.black54),
                   const SizedBox(width: 6),
-                  Text('${post.comments.length}', style: GoogleFonts.poppins(fontSize: 12, color: Colors.black54)),
+                  // <-- CHANGED: Stubbed comment count
+                  Text('0',
+                      style:
+                          GoogleFonts.poppins(fontSize: 12, color: Colors.black54)),
                 ]),
               ),
               const SizedBox(width: 18),
@@ -605,7 +677,8 @@ class _PostCard extends StatelessWidget {
                 child: Row(children: const [
                   Icon(Icons.share_outlined, size: 20, color: Colors.black54),
                   SizedBox(width: 6),
-                  Text('Share', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                  Text('Share',
+                      style: TextStyle(fontSize: 12, color: Colors.black54)),
                 ]),
               ),
             ],
@@ -616,68 +689,68 @@ class _PostCard extends StatelessWidget {
   }
 }
 
-// Placeholders للتحميل/الخطأ بنفس الثيم
+// ... (Keep _ImageSkeleton, _ImageError, _FiltersSheet, and _CommunityStyle exactly as they were) ...
 class _ImageSkeleton extends StatelessWidget {
-  const _ImageSkeleton();
+ const _ImageSkeleton();
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: _CommunityStyle.mintCard,
-      child: const Center(
-        child: SizedBox(
-          width: 28, height: 28,
-          child: CircularProgressIndicator(strokeWidth: 2.4, color: Color(0xFF2E7D32)),
-        ),
-      ),
-    );
-  }
+ @override
+ Widget build(BuildContext context) {
+  return Container(
+   color: _CommunityStyle.mintCard,
+   child: const Center(
+    child: SizedBox(
+     width: 28, height: 28,
+     child: CircularProgressIndicator(strokeWidth: 2.4, color: Color(0xFF2E7D32)),
+    ),
+   ),
+  );
+ }
 }
 
 class _ImageError extends StatelessWidget {
-  const _ImageError();
+ const _ImageError();
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: _CommunityStyle.mintCard,
-      alignment: Alignment.center,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: const [
-          Icon(Icons.broken_image_outlined, color: Color(0xFF2E7D32), size: 28),
-          SizedBox(height: 6),
-          Text('Image unavailable', style: TextStyle(color: Colors.black54, fontSize: 12)),
-        ],
-      ),
-    );
-  }
+ @override
+ Widget build(BuildContext context) {
+  return Container(
+   color: _CommunityStyle.mintCard,
+   alignment: Alignment.center,
+   child: Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: const [
+     Icon(Icons.broken_image_outlined, color: Color(0xFF2E7D32), size: 28),
+     SizedBox(height: 6),
+     Text('Image unavailable', style: TextStyle(color: Colors.black54, fontSize: 12)),
+    ],
+   ),
+  );
+ }
 }
 
 class _FiltersSheet extends StatefulWidget {
-  const _FiltersSheet({required this.onApply});
-  final ValueChanged<String> onApply;
+ const _FiltersSheet({required this.onApply});
+ final ValueChanged<String> onApply;
 
-  @override
-  State<_FiltersSheet> createState() => _FiltersSheetState();
+ @override
+ State<_FiltersSheet> createState() => _FiltersSheetState();
 }
 
 class _FiltersSheetState extends State<_FiltersSheet> {
-  final List<String> _tags = const ['All', 'General', 'Help', 'Phenology', 'Photos'];
-  String _selected = 'All';
+ final List<String> _tags = const ['All', 'General', 'Help', 'Phenology', 'Photos'];
+ String _selected = 'All';
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Center(child: Container(height: 4, width: 36, decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(2)))),
-        const SizedBox(height: 12),
-        Text('Filters', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w700)),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          children: _tags.map((t) {
+ @override
+ Widget build(BuildContext context) {
+  return Padding(
+   padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+   child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+    Center(child: Container(height: 4, width: 36, decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(2)))),
+    const SizedBox(height: 12),
+    Text('Filters', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w700)),
+    const SizedBox(height: 8),
+    Wrap(
+     spacing: 8,
+     children: _tags.map((t) {
             final sel = t == _selected;
             return ChoiceChip(
               label: Text(t),
@@ -687,23 +760,23 @@ class _FiltersSheetState extends State<_FiltersSheet> {
             );
           }).toList(),
         ),
-        const SizedBox(height: 12),
-        Align(
-          alignment: Alignment.centerRight,
-          child: FilledButton(
-            onPressed: () => widget.onApply(_selected),
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32), foregroundColor: Colors.white),
-            child: const Text('Apply'),
-          ),
-        ),
-      ]),
-    );
-  }
+    const SizedBox(height: 12),
+    Align(
+    alignment: Alignment.centerRight,
+    child: FilledButton(
+      onPressed: () => widget.onApply(_selected),
+      style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32), foregroundColor: Colors.white),
+     child: const Text('Apply'),
+     ),
+    ),
+   ]),
+  );
+ }
 }
 
 /// shared style constants
 class _CommunityStyle {
-  static const cardShadow = BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0,6));
-  static const mintCard = Color(0xFFDFF0E3);
-  static const mintBorder = Color(0xFFB7E0C2);
+ static const cardShadow = BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0,6));
+ static const mintCard = Color(0xFFDFF0E3);
+ static const mintBorder = Color(0xFFB7E0C2);
 }

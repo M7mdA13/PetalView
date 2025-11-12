@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:petalview/auth/signup.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class Login extends StatefulWidget {
   static const routeName = 'login';
@@ -158,6 +160,72 @@ class _LoginState extends State<Login> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(message), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _signInWithGoogle() async {
+    // Start loading
+    setState(() => _isLoading = true);
+
+    try {
+      // 1. Trigger the Google Sign-In flow
+      final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
+
+      // If the user cancelled the flow
+      if (googleUser == null) {
+        setState(() => _isLoading = false);
+        return;
+      }
+
+      // 2. Obtain the auth details (tokens) from the request
+      final GoogleSignInAuthentication googleAuth =
+          await googleUser.authentication;
+
+      // 3. Create a new Firebase credential
+      final OAuthCredential credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      // 4. Sign in to Firebase with the credential
+      final UserCredential userCredential = await FirebaseAuth.instance
+          .signInWithCredential(credential);
+
+      // 5. IMPORTANT: Check if it's a new user
+      final bool isNewUser =
+          userCredential.additionalUserInfo?.isNewUser ?? false;
+
+      if (isNewUser && userCredential.user != null) {
+        // If it's a new user, create their document in Firestore
+        // just like you did in the sign-up page
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(userCredential.user!.uid)
+            .set({
+              // Get name from Google, split it into first/last
+              'firstName': googleUser.displayName?.split(' ').first ?? '',
+              'lastName': googleUser.displayName?.split(' ').last ?? '',
+              'email': googleUser.email,
+              'createdAt': Timestamp.now(),
+              // You can add the Google profile pic URL too!
+              'profilePicUrl': googleUser.photoUrl,
+            });
+      }
+
+      // 6. Navigate to home
+      if (mounted) {
+        Navigator.of(context).pushReplacementNamed('home');
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error signing in with Google: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
@@ -325,10 +393,20 @@ class _LoginState extends State<Login> {
                           // social buttons
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                            children: const [
-                              _SocialButton(asset: 'assets/icons/google.png'),
-                              _SocialButton(asset: 'assets/icons/apple.png'),
-                              _SocialButton(asset: 'assets/icons/facbook.png'),
+                            children: [
+                              GestureDetector(
+                                onTap:
+                                    _signInWithGoogle, // <-- Call your new function
+                                child: const _SocialButton(
+                                  asset: 'assets/icons/google.png',
+                                ),
+                              ),
+                              const _SocialButton(
+                                asset: 'assets/icons/apple.png',
+                              ),
+                              const _SocialButton(
+                                asset: 'assets/icons/facbook.png',
+                              ),
                             ],
                           ),
                           const SizedBox(height: 16),
